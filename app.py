@@ -4,31 +4,16 @@ import os
 
 app = Flask(__name__)
 
+# Helper function to get best video+audio format
 def get_best_format(url):
-    """
-    Returns best video+audio format for download.
-    """
-    ydl_opts = {"quiet": True, "dump_single_json": True}
+    ydl_opts = {
+        "quiet": True,
+        "format": "bestvideo+bestaudio/best",
+        "noplaylist": True,
+    }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
-        formats = info.get("formats", [])
-
-        # Filter only formats with both video and audio
-        video_audio_formats = [f for f in formats if f.get("vcodec") != "none" and f.get("acodec") != "none"]
-
-        # Sort by resolution and fps
-        def quality_key(f):
-            height = f.get("height") or 0
-            fps = f.get("fps") or 0
-            return (height, fps)
-
-        if video_audio_formats:
-            best = max(video_audio_formats, key=quality_key)
-        else:
-            # fallback if no combined formats, pick best video only
-            best = max(formats, key=quality_key)
-
-        return best
+        return info
 
 @app.route("/getFormats", methods=["POST"])
 def get_formats():
@@ -38,15 +23,26 @@ def get_formats():
         return jsonify({"error": "No URL provided"}), 400
 
     try:
-        best = get_best_format(url)
+        info = get_best_format(url)
+        formats_out = []
+        for f in info.get("formats", []):
+            if f.get("vcodec") != "none" and f.get("acodec") != "none":
+                formats_out.append({
+                    "format_id": f.get("format_id"),
+                    "ext": f.get("ext"),
+                    "resolution": f.get("resolution") or f"{f.get('height')}p",
+                    "fps": f.get("fps"),
+                    "vcodec": f.get("vcodec"),
+                    "acodec": f.get("acodec"),
+                    "filesize": f.get("filesize") or f.get("filesize_approx"),
+                    "format_note": f.get("format_note"),
+                })
         return jsonify({
-            "title": best.get("title") or "Video",
-            "format_id": best.get("format_id"),
-            "ext": best.get("ext"),
-            "resolution": f"{best.get('height')}p" if best.get("height") else "audio only",
-            "vcodec": best.get("vcodec"),
-            "acodec": best.get("acodec"),
-            "filesize": best.get("filesize") or best.get("filesize_approx")
+            "title": info.get("title"),
+            "thumbnail": info.get("thumbnail"),
+            "uploader": info.get("uploader"),
+            "duration": info.get("duration"),
+            "formats": formats_out
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -55,16 +51,19 @@ def get_formats():
 def download():
     data = request.get_json(silent=True) or {}
     url = data.get("url")
-    format_id = data.get("format_id")
+    if not url:
+        return jsonify({"error": "No URL provided"}), 400
 
-    if not url or not format_id:
-        return jsonify({"error": "URL and format_id are required"}), 400
+    # Output template: saves file in current directory
+    ydl_opts = {
+        "format": "bestvideo+bestaudio/best",
+        "outtmpl": "%(title)s.%(ext)s",
+        "merge_output_format": "mp4",  # merge audio+video into mp4
+        "noplaylist": True,
+        "quiet": True,
+    }
 
     try:
-        ydl_opts = {
-            "format": format_id,
-            "outtmpl": "%(title)s.%(ext)s",  # saves as video_title.ext
-        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
@@ -73,5 +72,6 @@ def download():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5001))
-    app.run(host="0.0.0.0", port=port)
+    # For development only; in Render we use Gunicorn
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5001)))
+
